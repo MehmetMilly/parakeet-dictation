@@ -15,14 +15,22 @@ Speech is transcribed on this Mac with [Cohere Transcribe 03-2026](https://huggi
 
 Recordings are kept in `~/Library/Application Support/Parakeet Dictation/Recordings`.
 
-## Set up
+## Install
 
-Requires an Apple silicon Mac and Python 3.13 or newer.
+Download **Parakeet Dictation.dmg** from the [latest release](https://github.com/MehmetMilly/parakeet-dictation/releases/latest). Open it and drag the **Parakeet Dictation** folder into Applications. The folder has to stay together: the app and the `Runtime` folder next to it, which contains Python and the Cohere model.
+
+Right-click the app and choose Open the first time. macOS asks for that because the app is not notarized with Apple. Allow the microphone, and allow the app under System Settings → Privacy & Security → Device Control and Data Access so it can type into other apps.
+
+## Set up from source
+
+Requires an Apple silicon Mac, Python 3.13 or newer, and Git LFS. The Cohere weights in `models/cohere-transcribe-4bit` are the Apache-2.0 4-bit build from [spokedotso/cohere-transcribe-03-2026-mlx-4bit](https://huggingface.co/spokedotso/cohere-transcribe-03-2026-mlx-4bit), derived from CohereLabs/cohere-transcribe-03-2026.
 
 ```bash
+git lfs install
+git clone https://github.com/MehmetMilly/parakeet-dictation.git
+cd parakeet-dictation
 python3 -m venv .venv-cohere
 .venv-cohere/bin/pip install -r requirements.txt
-.venv-cohere/bin/python -c 'from huggingface_hub import snapshot_download; snapshot_download("spokedotso/cohere-transcribe-03-2026-mlx-4bit", local_dir="models/cohere-transcribe-4bit")'
 chmod +x build dictate transcribe
 ./build
 ./dictate

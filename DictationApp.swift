@@ -695,26 +695,58 @@ final class DictationController: NSObject, NSMenuDelegate {
         return (name?.takeRetainedValue() as String?) ?? "Microphone"
     }
 
+    private struct WorkerLayout {
+        let python: URL
+        let script: URL
+        let model: URL
+        let pythonPath: String?
+    }
+
+    private func workerLayout() -> WorkerLayout? {
+        let root = Bundle.main.bundleURL.deletingLastPathComponent()
+        let runtime = root.appendingPathComponent("Runtime")
+        let bundledPython = runtime.appendingPathComponent("Python.framework/Versions/3.14/bin/python3.14")
+        if FileManager.default.isExecutableFile(atPath: bundledPython.path) {
+            return WorkerLayout(
+                python: bundledPython,
+                script: runtime.appendingPathComponent("dictate_server.py"),
+                model: runtime.appendingPathComponent("models/cohere-transcribe-4bit"),
+                pythonPath: runtime.appendingPathComponent("site-packages").path
+            )
+        }
+        let python = root.appendingPathComponent(".venv-cohere/bin/python")
+        let script = root.appendingPathComponent("dictate_server.py")
+        guard FileManager.default.isExecutableFile(atPath: python.path) else { return nil }
+        return WorkerLayout(
+            python: python,
+            script: script,
+            model: root.appendingPathComponent("models/cohere-transcribe-4bit"),
+            pythonPath: nil
+        )
+    }
+
     // MARK: Worker
 
     private func startWorker() {
-        let root = Bundle.main.bundleURL.deletingLastPathComponent()
         ensureVocabulary()
-        let python = root.appendingPathComponent(".venv-cohere/bin/python")
-        let script = root.appendingPathComponent("dictate_server.py")
-        guard FileManager.default.isExecutableFile(atPath: python.path) else {
+        guard let layout = workerLayout() else {
             statusMenuItem.title = "Python environment is missing"
-            log("missing \(python.path)")
+            log("python environment is missing")
             return
         }
 
         let process = Process()
-        process.executableURL = python
-        process.arguments = ["-u", script.path]
+        process.executableURL = layout.python
+        process.arguments = ["-u", layout.script.path]
         var environment = ProcessInfo.processInfo.environment
         environment["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
         environment["TOKENIZERS_PARALLELISM"] = "false"
-        environment["COHERE_MODEL"] = root.appendingPathComponent("models/cohere-transcribe-4bit").path
+        environment["PYTHONDONTWRITEBYTECODE"] = "1"
+        environment["PYTHONNOUSERSITE"] = "1"
+        if let pythonPath = layout.pythonPath {
+            environment["PYTHONPATH"] = pythonPath
+        }
+        environment["COHERE_MODEL"] = layout.model.path
         environment["COHERE_VOCABULARY"] = supportDirectory().appendingPathComponent("vocabulary.txt").path
         process.environment = environment
 

@@ -1,0 +1,51 @@
+#!/bin/zsh
+# Build dist/Parakeet Dictation/ with the app and a Runtime folder beside it.
+# Python stays outside the app. macOS kills an ad-hoc Python binary that lives inside the bundle.
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")" && pwd)"
+folder="$root/dist/Parakeet Dictation"
+app="$folder/Parakeet Dictation.app"
+runtime="$folder/Runtime"
+framework_src="/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework"
+site_src="$root/.venv-cohere/lib/python3.14/site-packages"
+model_src="$root/models/cohere-transcribe-4bit"
+old_python="/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/Python"
+new_python="@executable_path/../Python"
+
+if [[ ! -d "$framework_src" || ! -d "$site_src" || ! -f "$model_src/model.safetensors" ]]; then
+  echo "Missing the local Python framework, .venv-cohere, or the Cohere model." >&2
+  exit 1
+fi
+
+rm -rf "$root/dist"
+mkdir -p "$app/Contents/MacOS" "$runtime"
+cp "$root/Info.plist" "$app/Contents/Info.plist"
+swiftc -O \
+  -framework AppKit \
+  -framework AVFoundation \
+  -framework ApplicationServices \
+  -framework CoreAudio \
+  -framework AudioToolbox \
+  -framework IOKit \
+  -framework CoreGraphics \
+  -o "$app/Contents/MacOS/Parakeet Dictation" \
+  "$root/DictationApp.swift"
+codesign --force --sign - --identifier com.mehmet.parakeet-dictation "$app"
+
+echo "Copying Python..."
+ditto "$framework_src" "$runtime/Python.framework"
+echo "Copying libraries..."
+ditto "$site_src" "$runtime/site-packages"
+find "$runtime/site-packages" -type d -name '__pycache__' -prune -exec rm -rf {} +
+echo "Copying model..."
+ditto "$model_src" "$runtime/models/cohere-transcribe-4bit"
+rm -rf "$runtime/models/cohere-transcribe-4bit/.cache"
+cp "$root/dictate_server.py" "$runtime/dictate_server.py"
+
+python_bin="$runtime/Python.framework/Versions/3.14/bin/python3.14"
+codesign --remove-signature "$python_bin" || true
+install_name_tool -change "$old_python" "$new_python" "$python_bin"
+codesign --force --sign - "$python_bin"
+echo "Built $folder"
+du -sh "$folder"
