@@ -1,0 +1,3 @@
+#!/bin/zsh
+DIR="$(cd "$(dirname "$0")" && pwd)"
+exec "$DIR/.venv-cohere/bin/python" "$DIR/transcribe.py" "$@"

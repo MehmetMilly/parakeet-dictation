@@ -1,0 +1,19 @@
+#!/bin/zsh
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")" && pwd)"
+app="$root/Parakeet Dictation.app"
+mkdir -p "$app/Contents/MacOS"
+cp "$root/Info.plist" "$app/Contents/Info.plist"
+swiftc -O \
+  -framework AppKit \
+  -framework AVFoundation \
+  -framework ApplicationServices \
+  -framework CoreAudio \
+  -framework AudioToolbox \
+  -framework IOKit \
+  -framework CoreGraphics \
+  -o "$app/Contents/MacOS/Parakeet Dictation" \
+  "$root/DictationApp.swift"
+codesign --force --sign - --identifier com.mehmet.parakeet-dictation "$app"
+echo "Built $app"

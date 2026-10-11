@@ -1,0 +1,7 @@
+.venv/
+.venv-cohere/
+__pycache__/
+*.pyc
+.DS_Store
+models/
+Parakeet Dictation.app/

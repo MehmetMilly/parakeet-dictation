@@ -1,0 +1,2 @@
+#!/bin/zsh
+open "$(cd "$(dirname "$0")" && pwd)/Parakeet Dictation.app"
