@@ -4,6 +4,7 @@ import AVFoundation
 import CoreAudio
 import CoreGraphics
 import IOKit.hid
+import Darwin
 
 private let rightCommand: UInt64 = 0x00000010
 private let rightOption: UInt64 = 0x00000040
@@ -85,6 +86,11 @@ final class DictationController: NSObject, NSMenuDelegate {
     private var utteranceRecording: URL?
 
     func start() {
+        do {
+            try PrivateStorage.restrictExistingRecordings(in: recordingsDirectory())
+        } catch {
+            log("recording permissions failed: \(error.localizedDescription)")
+        }
         buildMenu()
         setSymbol("mic.slash")
         statusItem.button?.toolTip = "Parakeet Dictation"
@@ -426,7 +432,8 @@ final class DictationController: NSObject, NSMenuDelegate {
     private func submit(_ samples: [Float], rate: Double, token: Int, isFinal: Bool) {
         let voice = resample(samples, from: rate, to: Double(sampleRate))
         guard !voice.isEmpty else { return }
-        let url = FileManager.default.temporaryDirectory
+        let url = PrivateStorage.temporaryDirectory
+            .appendingPathComponent("Parakeet Dictation", isDirectory: true)
             .appendingPathComponent("parakeet-part-\(UUID().uuidString).wav")
         do {
             try writeWav(voice, rate: sampleRate, to: url)
@@ -929,13 +936,13 @@ final class DictationController: NSObject, NSMenuDelegate {
     private func supportDirectory() -> URL {
         let url = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/Parakeet Dictation", isDirectory: true)
-        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        try? PrivateStorage.prepareDirectory(url)
         return url
     }
 
     private func recordingsDirectory() -> URL {
         let url = supportDirectory().appendingPathComponent("Recordings", isDirectory: true)
-        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        try? PrivateStorage.prepareDirectory(url)
         return url
     }
 
@@ -950,7 +957,7 @@ final class DictationController: NSObject, NSMenuDelegate {
         Adreno
 
         """
-        try? seed.write(to: url, atomically: true, encoding: .utf8)
+        try? PrivateStorage.write(seed, to: url)
     }
 
     private func storeTranscript(_ text: String?, for wav: URL) {
@@ -958,10 +965,10 @@ final class DictationController: NSObject, NSMenuDelegate {
         let transcript = stem.appendingPathExtension("txt")
         let failure = stem.appendingPathExtension("err")
         if let text, !text.isEmpty {
-            try? text.write(to: transcript, atomically: true, encoding: .utf8)
+            try? PrivateStorage.write(text, to: transcript)
             try? FileManager.default.removeItem(at: failure)
         } else {
-            try? "failed\n".write(to: failure, atomically: true, encoding: .utf8)
+            try? PrivateStorage.write("failed\n", to: failure)
         }
         pruneRecordings()
     }
@@ -1440,7 +1447,7 @@ private func writeWav(_ samples: [Float], rate: Int, to url: URL) throws {
         let clamped = max(-1 as Float, min(1, sample))
         le16(UInt16(bitPattern: Int16(clamped * 32767)))
     }
-    try data.write(to: url, options: .atomic)
+    try PrivateStorage.write(data, to: url)
 }
 
 private func log(_ message: String) {
@@ -1491,3 +1498,97 @@ application.setActivationPolicy(.accessory)
 private let delegate = AppDelegate()
 application.delegate = delegate
 application.run()
+
+// MARK: Private storage
+
+
+/// Restricts microphone data even when the process umask permits public reads.
+/// Directory descriptors and no-follow opens keep symlinks out of write paths.
+private enum PrivateStorage {
+    // Foundation preserves macOS's /var alias, so canonicalize only the trusted
+    // OS-provided temporary root before rejecting symlinks beneath it.
+    static var temporaryDirectory: URL {
+        let base = FileManager.default.temporaryDirectory
+        guard let path = realpath(base.path, nil) else { return base }
+        defer { free(path) }
+        return URL(fileURLWithPath: String(cString: path), isDirectory: true)
+    }
+
+    private static func failure() -> NSError {
+        NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+    }
+
+    private static func directoryFD(_ url: URL) throws -> Int32 {
+        var descriptor = open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+        guard descriptor >= 0 else { throw failure() }
+        do {
+            let components = url.pathComponents.filter { $0 != "/" }
+            for (index, component) in components.enumerated() {
+                var child = openat(descriptor, component, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                if child < 0 && errno == ENOENT {
+                    guard mkdirat(descriptor, component, 0o700) == 0 || errno == EEXIST else { throw failure() }
+                    child = openat(descriptor, component, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                }
+                guard child >= 0 else { throw failure() }
+                close(descriptor)
+                descriptor = child
+                if index == components.count - 1 {
+                    guard fchmod(descriptor, 0o700) == 0 else { throw failure() }
+                }
+            }
+            return descriptor
+        } catch {
+            close(descriptor)
+            throw error
+        }
+    }
+
+    static func prepareDirectory(_ url: URL) throws {
+        let descriptor = try directoryFD(url)
+        close(descriptor)
+    }
+
+    static func restrictExistingRecordings(in url: URL) throws {
+        let directory = try directoryFD(url)
+        defer { close(directory) }
+        for name in try FileManager.default.contentsOfDirectory(atPath: url.path) {
+            guard ["wav", "txt", "err"].contains((name as NSString).pathExtension.lowercased()) else { continue }
+            let file = openat(directory, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+            guard file >= 0 else { continue }
+            defer { close(file) }
+            var info = stat()
+            // Never chmod a symlink, device, or hard link to an unrelated file.
+            if fstat(file, &info) == 0 && (info.st_mode & S_IFMT) == S_IFREG && info.st_nlink == 1 {
+                guard fchmod(file, 0o600) == 0 else { throw failure() }
+            }
+        }
+    }
+
+    static func write(_ data: Data, to url: URL) throws {
+        let directory = try directoryFD(url.deletingLastPathComponent())
+        defer { close(directory) }
+        let temporary = ".parakeet-\(UUID().uuidString)"
+        let file = openat(directory, temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard file >= 0 else { throw failure() }
+        defer {
+            close(file)
+            unlinkat(directory, temporary, 0)
+        }
+        guard fchmod(file, 0o600) == 0 else { throw failure() }
+        try data.withUnsafeBytes { bytes in
+            var offset = 0
+            while offset < bytes.count {
+                let written = Darwin.write(file, bytes.baseAddress!.advanced(by: offset), bytes.count - offset)
+                if written < 0 && errno == EINTR { continue }
+                guard written > 0 else { throw failure() }
+                offset += written
+            }
+        }
+        // renameat replaces a destination symlink itself, never its target.
+        guard renameat(directory, temporary, directory, url.lastPathComponent) == 0 else { throw failure() }
+    }
+
+    static func write(_ text: String, to url: URL) throws {
+        try write(Data(text.utf8), to: url)
+    }
+}
